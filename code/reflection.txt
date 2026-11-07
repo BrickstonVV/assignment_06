@@ -1,7 +1,26 @@
-Write your reflection here.
+Reflection 
 
-See reflection.md for what makes a good reflection — be specific, use the
-terminology from this assignment (REST API, endpoint, HTTP status code,
-raise_for_status, API key, form data vs. JSON body, rate limit, caching,
-json_normalize, record_path, meta, grain, opinion mining, named-entity
-recognition, prompt, system prompt, reasoning model), and make it actionable.
+This assignment used a REST API to turn 30 coffee shop reviews into data the
+owner can search. I worked through it with help from Claude.
+
+Each function in apicalls.py calls one endpoint: build the URL, send my API key
+in a header, call raise_for_status(), and return the JSON. The Azure endpoints
+take form data, and the AI endpoints take a JSON body. raise_for_status() stops
+the code right away on a bad HTTP status code like 401 (bad key) or 404 (wrong
+path) instead of failing later with a confusing error.
+
+The portal has a rate limit of 150 requests a day, so the pipeline uses caching:
+it saves each API response to a file and reads that file on later runs.
+json_normalize with record_path and meta flattened the JSON into tables, changing
+the grain from reviews to sentences.
+
+Opinion mining and named-entity recognition each catch what the other misses.
+Opinion mining found that people liked the seating but not the music, and
+named-entity recognition found staff names like Otto that had no opinion words.
+
+For the Q&A box, the system prompt tells the model to use only the facts it is
+given. pandas does the counting and the reasoning model only writes the answer.
+
+What I learned the hard way: fork the repo first, install requirements and set up
+the .env file before coding, run the tests after each step, and make sure I am
+editing the right file.

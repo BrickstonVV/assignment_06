@@ -1,79 +1,85 @@
 """
-explore.py — run the pipeline one step at a time on the five test reviews. (Provided.)
+review_explorer.py — the Streamlit page: filter the mentions, and ask the reviews.
 
-Tests do not stop at breakpoints; this script does. Open it, set a breakpoint on
-any line below (or inside one of your functions), and run it with
-Run and Debug -> "Python Debugger: Current File". Each step prints what came
-back, so you can see a table take shape the moment your function builds it.
-
-The first run calls the API (about 15 calls for the five reviews — the subject
-step is slow the first time, seconds per mention). After that everything comes
-from cache/, so run it as often as you like. Delete a file in cache/ to redo
-that one step.
-
-A step you have not written yet returns None; the script says so and stops.
+Run it from the repository root with:  streamlit run code/review_explorer.py
 """
 
-import json
+import os
 
-import pandas as pd
+import streamlit as st
 
-from reviews import (
-    TEST_REVIEWS_FILE,
-    build_mentions,
-    cache_path,
-    entities_step,
-    entities_table,
-    entity_mentions,
+from reviews.apicalls import ask_llm
+from reviews.aspects import (
+    analyze_reviews,
+    answer_question,
+    build_messages,
+    describe_scope,
     load_aliases,
-    opinions_table,
-    sentences_table,
-    sentiment_step,
-    subjects_step,
     summarize_items,
 )
+from reviews.settings import REVIEWS_FILE
 
-pd.set_option("display.width", 200)
-pd.set_option("display.max_columns", 20)
-pd.set_option("display.max_colwidth", 50)
+# 1. Which reviews to show: the REVIEWS_FILE environment variable (the tests set it),
+#    else the 30 reviews.
+reviews_file = os.environ.get("REVIEWS_FILE", REVIEWS_FILE)
 
+# 2. Run the pipeline (from the cache after the first time).
+mentions = analyze_reviews(reviews_file)
+aliases = load_aliases()
 
-def show(label: str, result) -> None:
-    """Print one step's result, or stop with a hint if the step is not written yet."""
-    print(f"\n=== {label}")
-    if result is None:
-        print("    returned None — this function is still a stub. Write it, run again.")
-        raise SystemExit(0)
-    if isinstance(result, pd.DataFrame):
-        print(f"    {result.shape[0]} rows x {result.shape[1]} columns")
-        print(result.head(15))
+# 3. Title.
+st.title("Salt City Coffee — What Customers Are Saying")
+
+# 4. Filters: "All" plus each location / subject.
+locations = ["All"] + sorted(mentions["location"].unique())
+subjects = ["All"] + sorted(mentions["subject"].unique())
+left, right = st.columns(2)
+location = left.selectbox("Location", locations, key="location")
+subject = right.selectbox("Subject", subjects, key="subject")
+
+filtered = mentions
+if location != "All":
+    filtered = filtered[filtered["location"] == location]
+if subject != "All":
+    filtered = filtered[filtered["subject"] == subject]
+
+# 5. Four metrics for the filtered mentions.
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Reviews", filtered["review_id"].nunique())
+col2.metric("Mentions", len(filtered))
+col3.metric("Positive", int((filtered["mention_sentiment"] == "positive").sum()))
+col4.metric("Negative", int((filtered["mention_sentiment"] == "negative").sum()))
+
+# 6. Three tabs, one table in each.
+summary = summarize_items(filtered)
+praised = summary[summary["net"] > 0].sort_values(
+    ["net", "mentions"], ascending=[False, False]).head(5)
+complained = summary[summary["net"] < 0].sort_values(
+    ["net", "mentions"], ascending=[True, False]).head(5)
+
+praised_tab, complained_tab, said_tab = st.tabs(
+    ["Most praised", "Most complained about", "What people said"])
+with praised_tab:
+    st.dataframe(praised, hide_index=True)
+with complained_tab:
+    st.dataframe(complained, hide_index=True)
+with said_tab:
+    st.dataframe(filtered, hide_index=True)
+
+# 7. The question box.
+st.subheader("Ask the reviews")
+question = st.text_input("Your question", key="question",
+                         placeholder="Do people like the mocha latte?")
+
+if st.button("Ask", key="ask") and question.strip():
+    scope, evidence = answer_question(question, mentions, aliases)
+    if evidence.empty:
+        # Nothing in the reviews matches: say so, and do not call the model.
+        st.warning(f"No review mentions {describe_scope(scope)}, "
+                   "so there is nothing to answer from.")
     else:
-        print(json.dumps(result[0], indent=1)[:1500], "\n    ...")
-
-
-reviews = pd.read_csv(TEST_REVIEWS_FILE)
-print(reviews)
-
-documents = sentiment_step(reviews, cache_path(TEST_REVIEWS_FILE, "sentiment"))
-show("Step 2: sentiment_step (first document)", documents)
-entity_documents = entities_step(reviews, cache_path(TEST_REVIEWS_FILE, "entities"))
-show("Step 2: entities_step (first document)", entity_documents)
-
-sentences = sentences_table(documents)
-show("Step 2: sentences_table", sentences)
-opinions = opinions_table(documents)
-show("Step 2: opinions_table", opinions)
-entities = entities_table(entity_documents)
-show("Step 2: entities_table", entities)
-
-entity_rows = entity_mentions(entities, sentences, opinions)
-show("Step 3: entity_mentions", entity_rows)
-if opinions is not None and entity_rows is not None:
-    combined = pd.concat([opinions, entity_rows], ignore_index=True)
-    subjects = subjects_step(reviews, combined,
-                             cache_path(TEST_REVIEWS_FILE, "subjects", "csv"))
-    show("Step 2: subjects_step", subjects)
-    mentions = build_mentions(reviews, sentences, opinions, entity_rows, subjects,
-                              load_aliases())
-    show("Step 3: build_mentions", mentions)
-    show("Step 3: summarize_items", summarize_items(mentions))
+        with st.spinner("Reading the reviews..."):
+            answer = ask_llm(build_messages(question, evidence))
+        st.write(answer)
+        st.caption(f"Based on {len(evidence)} mentions: {describe_scope(scope)}")
+        st.dataframe(evidence, hide_index=True)
